@@ -21,10 +21,6 @@ const (
 	DefaultEgressInterface string = "eth0"
 )
 
-var (
-	DefaultListenPort int = 51820
-)
-
 type OnceWithError struct {
 	once sync.Once
 	err  error
@@ -43,14 +39,14 @@ func (o *OnceWithError) Err() error {
 // Server is the server-side representation of the list of peers for a given WireGuard interface.
 type Server struct {
 	Address         string
-	PrivateKey      string
-	CIDR            string
 	Interface       string
+	PrivateKey      string
+	PresharedKey    *wgtypes.Key
+	CIDR            string
 	EgressInterface string
 	PublicAddress   string
 
-	xorshift     *XorShift
-	presharedKey [32]byte
+	xorshift *XorShift
 
 	Config *wgtypes.Config
 
@@ -77,7 +73,11 @@ func serverPrivateKey(seed uint64) (*wgtypes.Key, error) {
 // NewServerFromSeed creates a new server instance from the passed seed.
 func NewServerFromSeed(seed uint64) (*Server, error) {
 	// TODO: use a truly random key and just communicate the psk
-	psk, err := rand256bitForNthIteration(seed, pskOffset)
+	pskBytes, err := rand256bitForNthIteration(seed, pskOffset)
+	if err != nil {
+		return nil, err
+	}
+	psk, err := wgtypes.NewKey(pskBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -90,6 +90,7 @@ func NewServerFromSeed(seed uint64) (*Server, error) {
 	return &Server{
 		Address:         DefaultServerAddr,
 		PrivateKey:      privKey.String(),
+		PresharedKey:    &psk,
 		CIDR:            DefaultCIDR,
 		Interface:       DefaultInterface,
 		EgressInterface: DefaultEgressInterface,
@@ -100,14 +101,15 @@ func NewServerFromSeed(seed uint64) (*Server, error) {
 			PrivateKey: privKey,
 			ListenPort: &DefaultListenPort,
 		},
-		presharedKey: [32]byte(psk),
-		maxPeers:     1,
-		once:         &OnceWithError{},
+		maxPeers: 1,
+		once:     &OnceWithError{},
 	}, nil
 }
 
-// SetIPAddress sets the public IP address.
-func (s *Server) SetIPAddress(addr string) error {
+// SetExternalIPAddress sets the public IP address.
+// This is needed if we're listening on a particular interface
+// or a non-standard port.
+func (s *Server) SetExternalIPAddress(addr string) error {
 	parts := strings.Split(addr, ":")
 	if len(parts) != 2 {
 		return fmt.Errorf("expected ip:port format")
@@ -119,6 +121,12 @@ func (s *Server) SetIPAddress(addr string) error {
 
 	s.PublicAddress = addr
 	s.Config.ListenPort = &port
+	return nil
+}
+
+// SetInterface sets the egress interface.
+func (s *Server) SetInterface(iface string) error {
+	s.EgressInterface = iface
 	return nil
 }
 
@@ -168,8 +176,9 @@ func (s *Server) GenerateConfig(max uint64) error {
 			}
 
 			peerConfig := wgtypes.PeerConfig{
-				PublicKey:  public,
-				AllowedIPs: []net.IPNet{*ipNet},
+				PublicKey:    public,
+				AllowedIPs:   []net.IPNet{*ipNet},
+				PresharedKey: s.PresharedKey,
 			}
 			s.Config.Peers = append(s.Config.Peers, peerConfig)
 			n += 1
@@ -186,12 +195,14 @@ var srvConfigTemplate = `[Interface]
 PrivateKey = {{ .PrivateKey }}
 Address = {{ .Address }}
 ListenPort = {{ .Config.ListenPort }}
-PostUp =  iptables -t nat -A POSTROUTING -s {{ .CIDR }} -o {{ .EgressInterface }} -j MASQUERADE; iptables -A INPUT -p udp -m udp --dport {{ .Config.ListenPort }} -j ACCEPT; iptables -A FORWARD -i {{ .Interface }} -j ACCEPT; iptables -A FORWARD -o {{ .Interface }} -j ACCEPT;
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE;iptables -A FORWARD -o %i -j ACCEPT
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE;iptables -D FORWARD -o %i -j ACCEPT
 
 {{ range .Config.Peers }}
 [Peer]
 PublicKey = {{ .PublicKey }}
 AllowedIPs = {{ index .AllowedIPs 0 }}
+PresharedKey = {{ .PresharedKey }}
 {{ end }}
 `
 
@@ -242,6 +253,14 @@ func newKeyPairFromBytes(b []byte) (*KeyPair, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	/*
+		fmt.Println("Peer:")
+		fmt.Println("private:", privateKey.String())
+		fmt.Println("public:", privateKey.PublicKey().String())
+		fmt.Println()
+	*/
+
 	return &KeyPair{
 		PrivateKey: privateKey.String(),
 		PublicKey:  privateKey.PublicKey().String(),

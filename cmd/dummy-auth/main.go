@@ -13,6 +13,7 @@ import (
 
 type config struct {
 	addr  string
+	iface string
 	seed  string
 	peers int
 }
@@ -22,7 +23,8 @@ func main() {
 
 	defaultSeedStr := strconv.Itoa(int(prng.DefaultSeed))
 
-	flag.StringVar(&cfg.addr, "address", "127.0.0.1:58120", "address for the server (default: 127.0.0.1:58120)")
+	flag.StringVar(&cfg.addr, "address", "0.0.0.0:51820", "address for the server")
+	flag.StringVar(&cfg.iface, "iface", "eth0", "egress interface")
 	flag.StringVar(&cfg.seed, "seed", defaultSeedStr, "seed to use in the deterministic auth generation")
 	flag.IntVar(&cfg.peers, "peers", 10, "number of peers in the pool")
 
@@ -42,7 +44,7 @@ func main() {
 	}
 
 	if !isServer && !isPeer {
-		fmt.Println("expected either 'server' or 'client'")
+		fmt.Println("expected either 'server' or 'peer'")
 		os.Exit(1)
 	}
 
@@ -58,7 +60,9 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		server.SetIPAddress(cfg.addr)
+
+		server.SetExternalIPAddress(cfg.addr)
+		server.SetInterface(cfg.iface)
 
 		server.GenerateConfig(uint64(cfg.peers))
 		fmt.Println(string(server.SerializeConfig()))

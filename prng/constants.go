@@ -6,3 +6,7 @@ const (
 	pskOffset    uint64 = 10
 	serverOffset uint64 = 11
 )
+
+var (
+	DefaultListenPort int = 51820
+)

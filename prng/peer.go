@@ -2,9 +2,10 @@ package prng
 
 import (
 	"bytes"
-	"encoding/base64"
 	"errors"
 	"text/template"
+
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 const (
@@ -30,7 +31,11 @@ func NewPeerFromSeedAndNumber(seed, n uint64) (*Peer, error) {
 		return nil, errors.New("n must be >= 1")
 	}
 
-	psk, err := rand256bitForNthIteration(seed, pskOffset)
+	pskBytes, err := rand256bitForNthIteration(seed, pskOffset)
+	if err != nil {
+		return nil, err
+	}
+	psk, err := wgtypes.NewKey(pskBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -66,8 +71,8 @@ func NewPeerFromSeedAndNumber(seed, n uint64) (*Peer, error) {
 		DNS:           defaultDNS,
 		PrivateKey:    keyPair.PrivateKey,
 		PublicKey:     keyPair.PublicKey,
-		PresharedKey:  base64.StdEncoding.EncodeToString(psk),
-		PeerPublicKey: serverPrivateKey.String(),
+		PresharedKey:  psk.String(),
+		PeerPublicKey: serverPrivateKey.PublicKey().String(),
 	}
 	return peer, nil
 }
